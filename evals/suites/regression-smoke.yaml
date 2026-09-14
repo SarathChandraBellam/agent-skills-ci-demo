@@ -1,0 +1,9 @@
+name: regression-smoke
+purpose: Fast deterministic checks for every pull request.
+trials: 1
+graders:
+  - deterministic-frontmatter
+  - smoke-script
+
+# Production repositories should add task fixtures, isolated workspaces,
+# paired with-skill/no-skill trials, and outcome verifiers here.

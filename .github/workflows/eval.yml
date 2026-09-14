@@ -1,0 +1,36 @@
+name: Skill evaluations
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-skill-evals
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@1044a6dea927916f2c38ba5aeffbc0a847b1221a # v4
+      - name: Run deterministic regression suite
+        run: python evals/runner.py | tee eval-results.json
+      - name: Publish evaluation summary
+        run: |
+          {
+            echo '## Scheduled skill evaluation'
+            echo
+            echo 'Commit: `${{ github.sha }}`'
+            echo
+            cat eval-results.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4
+        with:
+          name: scheduled-eval-${{ github.sha }}
+          path: eval-results.json
+          retention-days: 30

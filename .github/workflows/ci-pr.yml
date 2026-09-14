@@ -1,0 +1,93 @@
+name: Skill CI
+
+on:
+  pull_request:
+    paths:
+      - '.agents/skills/**'
+      - 'scripts/**'
+      - 'evals/**'
+      - '.github/workflows/**'
+      - 'requirements-ci.txt'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skill-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SKILLS_REF_REV: f130f348f502d9804278a617f86929846896d2e9
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      skills: ${{ steps.changed.outputs.skills }}
+    steps:
+      - uses: actions/checkout@1044a6dea927916f2c38ba5aeffbc0a847b1221a # v4
+        with:
+          fetch-depth: 0
+      - id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="origin/${{ github.base_ref }}"
+            changed=$(git diff --name-only "$base...HEAD" -- .agents/skills/ || true)
+          else
+            changed=$(find .agents/skills -mindepth 1 -maxdepth 1 -type d -print || true)
+          fi
+          skills=$(printf '%s\n' "$changed" | awk -F/ '/^\.agents\/skills\/[^/]+\// {print $1 "/" $2}' | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))')
+          echo "skills=$skills" >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: discover
+    if: needs.discover.outputs.skills != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        skill: ${{ fromJSON(needs.discover.outputs.skills) }}
+    steps:
+      - uses: actions/checkout@1044a6dea927916f2c38ba5aeffbc0a847b1221a # v4
+      - uses: actions/setup-python@337b0725b8770380d7cde73cfef696f1295727eb # v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned skills-ref
+        run: python -m pip install "git+https://github.com/agentskills/agentskills.git@${SKILLS_REF_REV}#subdirectory=skills-ref"
+      - name: Validate Agent Skills specification
+        run: skills-ref validate "${{ matrix.skill }}"
+      - name: Validate repository policy
+        run: python scripts/check_skill_policy.py .agents/skills
+      - name: Validate resource references
+        run: python scripts/check_references.py "${{ matrix.skill }}"
+      - name: Run bundled smoke test
+        run: python "${{ matrix.skill }}/scripts/smoke.py"
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo '## ${{ matrix.skill }}'
+            echo '- skills-ref: passed'
+            echo '- repository policy: passed'
+            echo '- resource references: passed'
+            echo '- smoke test: passed'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  regression-smoke:
+    needs: validate
+    if: needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1044a6dea927916f2c38ba5aeffbc0a847b1221a # v4
+      - name: Run deterministic regression smoke suite
+        run: python evals/runner.py | tee eval-results.json
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4
+        with:
+          name: regression-smoke-${{ github.sha }}
+          path: eval-results.json
+          retention-days: 5
